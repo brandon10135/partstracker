@@ -1,0 +1,108 @@
+# main_app.py
+
+import tkinter as tk
+from tkinter import ttk, simpledialog, messagebox, filedialog
+
+# Import backend logic and data management
+from data_manager import DataManager
+import app_logic as logic
+import file_handler as f_handler
+
+# Import the GUI classes from the other files
+from gui_components import FormPopup
+from gui_views import WelcomeScreen, TurbineView
+# We still need the Toplevel windows for popups
+from gui_views import TurbineDetailsWindow, PartLifecycleWindow
+
+class App:
+    """
+    The main application controller. It manages the main window
+    and controls switching between different view frames.
+    """
+    def __init__(self, root):
+        self.root = root
+        self.root.title("GE Gas Turbine Parts Tracker")
+        self.root.geometry("950x600")
+        
+        self.data_manager = DataManager('data.json')
+
+        # Container to hold all frames
+        container = ttk.Frame(self.root)
+        container.pack(side="top", fill="both", expand=True)
+        container.grid_rowconfigure(0, weight=1)
+        container.grid_columnconfigure(0, weight=1)
+
+        self.frames = {}
+        # Instantiate each page and place it in the container
+        for F in (WelcomeScreen, TurbineView):
+            frame = F(container, self, self.data_manager)
+            self.frames[F.__name__] = frame
+            frame.grid(row=0, column=0, sticky="nsew")
+
+        # Start by showing the Welcome Screen
+        self.show_frame("WelcomeScreen")
+
+    def show_frame(self, page_name, location_filter=None):
+        """Raises a frame to the top and optionally refreshes its data."""
+        frame = self.frames[page_name]
+        # If we are showing the TurbineView, refresh its list
+        if page_name == "TurbineView":
+            frame.populate_turbine_list(location_filter)
+        # If we are showing the WelcomeScreen, refresh its location list
+        elif page_name == "WelcomeScreen":
+            frame.populate_locations()
+            
+        frame.tkraise()
+
+    def quit(self):
+        """Closes the application."""
+        self.root.destroy()
+        
+    # --- Methods to be called by views ---
+    
+    def open_part_search(self):
+        part_sn = simpledialog.askstring("Search Part", "Enter Part Serial Number:", parent=self.root)
+        if not part_sn: return
+
+        part_instance = logic.get_part_instance_by_serial(self.data_manager, part_sn)
+        if not part_instance:
+            messagebox.showinfo("Not Found", f"No part instance found with serial number: {part_sn}")
+            return
+        lifecycle_data = logic.get_part_lifecycle(self.data_manager, part_instance['instance_id'])
+        if lifecycle_data:
+            PartLifecycleWindow(self.root, self.data_manager, lifecycle_data)
+
+    def open_add_turbine_form(self):
+        fields = ['serial_number', 'frame_type', 'location', 'current_total_hours', 'current_total_starts']
+        def save_logic(**kwargs):
+            kwargs['current_total_hours'] = float(kwargs['current_total_hours'])
+            kwargs['current_total_starts'] = int(kwargs['current_total_starts'])
+            logic.add_turbine(self.data_manager, **kwargs)
+            # Refresh the welcome screen's location list in case a new location was added
+            self.show_frame("WelcomeScreen")
+        FormPopup(self.root, "Add New Turbine", fields, save_logic)
+
+    def open_add_part_master_form(self):
+        fields = ['part_number', 'part_name', 'description', 'manufacturer']
+        FormPopup(self.root, "Add Part Master", fields, lambda **kwargs: logic.add_part_master(self.data_manager, **kwargs))
+        
+    def open_import_dialog(self):
+        file_path = filedialog.askopenfilename(filetypes=[("Excel", "*.xlsx *.xls"), ("CSV", "*.csv")])
+        if not file_path: return
+        summary = f_handler.import_from_file(self.data_manager, file_path)
+        if summary.get("error"):
+            messagebox.showerror("Import Failed", summary["error"])
+        else:
+            messagebox.showinfo("Import Complete", f"Added: {summary['added']}\nFailed: {summary['failed']}")
+
+
+if __name__ == '__main__':
+    # Ensure helper function exists on app_logic
+    if not hasattr(logic, 'get_turbine_by_id'):
+        def get_turbine_by_id(data_manager, turbine_id):
+            return next((t for t in data_manager.data.get('turbines', []) if t['turbine_id'] == turbine_id), None)
+        logic.get_turbine_by_id = get_turbine_by_id
+    
+    root = tk.Tk()
+    app = App(root)
+    root.mainloop()
